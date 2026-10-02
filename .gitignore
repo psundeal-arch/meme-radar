@@ -19,3 +19,6 @@ logs/**
 *.pem
 *.p12
 npm-debug.log*
+
+# 实盘观测产物（ops/）
+snapshots/
