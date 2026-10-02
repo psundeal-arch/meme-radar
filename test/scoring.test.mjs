@@ -317,3 +317,45 @@ test('deep screen hard-fails unrenounced ownership and unlocked LP', () => {
   assert.ok(result.failed.includes('lpLocked'));
   assert.ok(result.failed.includes('wash'));
 });
+
+test('deep screen reads LP lock state from lock_summary detail entries', () => {
+  // Shape observed live on BNB Chain: the top-level percentage is absent and
+  // lock_summary.lock_percent reads 0 while lock_detail holds the real share.
+  const bscLockSummary = {
+    is_locked: true, lock_percent: '0', left_lock_percent: '0',
+    lock_detail: [{ percent: '0.95', pool: '0x0000000000000000000000000000000000000000', is_blackhole: true }]
+  };
+  const audit = security => ({ info: {}, security, pool: { liquidity: 10_000 }, holders: [], traders: [], candles: [] });
+
+  const locked = deepScreen({ discovery: {}, audit: audit({ open_source: true, is_renounced: true, burn_status: '', lock_summary: bscLockSummary }) }, config);
+  assert.equal(locked.checks.lpLocked, true);
+  assert.equal(locked.security.lockRate, .95);
+  assert.ok(!locked.unknownFields.includes('lockRate'));
+
+  // A summary below the threshold must still fail, not inherit a burn bypass
+  // from its blackhole entry.
+  const thin = deepScreen({ discovery: {}, audit: audit({ open_source: true, is_renounced: true, burn_status: '',
+    lock_summary: { ...bscLockSummary, lock_detail: [{ percent: '0.01', is_blackhole: true }] } }) }, config);
+  assert.equal(thin.checks.lpLocked, false);
+  assert.equal(thin.security.lockRate, .01);
+  assert.ok(!thin.blockingUnknownFields.includes('lockRate'));
+
+  // An unreadable entry keeps the rate unknown instead of understating it.
+  const partial = deepScreen({ discovery: {}, audit: audit({ open_source: true, is_renounced: true,
+    lock_summary: { lock_detail: [{ percent: '0.9' }, { percent: 'n/a' }] } }) }, config);
+  assert.equal(partial.security.lockRate, null);
+  assert.ok(partial.blockingUnknownFields.includes('lockRate'));
+
+  // Several locks add up; a contradictory total above 1 stays unknown.
+  const split = deepScreen({ discovery: {}, audit: audit({ open_source: true, is_renounced: true,
+    lock_summary: { lock_detail: [{ percent: '0.5' }, { percent: '0.45' }] } }) }, config);
+  assert.equal(split.security.lockRate, .95);
+  const contradictory = deepScreen({ discovery: {}, audit: audit({ open_source: true, is_renounced: true,
+    lock_summary: { lock_detail: [{ percent: '0.8' }, { percent: '0.8' }] } }) }, config);
+  assert.equal(contradictory.security.lockRate, null);
+
+  // An explicit top-level percentage still wins over the summary.
+  const explicit = deepScreen({ discovery: {}, audit: audit({ open_source: true, is_renounced: true, lock_percent: .1, lock_summary: bscLockSummary }) }, config);
+  assert.equal(explicit.security.lockRate, .1);
+  assert.equal(explicit.checks.lpLocked, false);
+});

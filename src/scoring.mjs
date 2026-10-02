@@ -328,6 +328,29 @@ export function discoveryScreen(row, config, nowSec = Date.now() / 1000) {
   };
 }
 
+// GMGN aggregates several upstream providers, so LP lock state arrives in a
+// different shape per chain. Some return a top-level percentage; others return
+// only a lock_summary whose own lock_percent can read 0 while the real position
+// sits in lock_detail. Sum the detail entries rather than trusting that summary
+// field. Blackhole entries are LP sent to a burn address: still locked, and
+// deliberately counted toward the same rate instead of bypassing the threshold,
+// so a token with a token amount burned cannot skip the lock requirement.
+function lockSummaryRate(summary) {
+  const rows = Array.isArray(summary?.lock_detail) ? summary.lock_detail : [];
+  if (!rows.length) return null;
+  let total = 0;
+  for (const row of rows) {
+    const percent = optionalRate(row?.percent);
+    // One unreadable entry makes the total unknown; a partial sum would
+    // understate the locked share and read as a confident failure.
+    if (percent === null) return null;
+    total += percent;
+  }
+  // optionalRate rejects a total above 1, which is contradictory upstream data
+  // rather than a fully locked pool.
+  return total;
+}
+
 function securityView(source = {}, discovery = {}, info = {}) {
   const stat = info.stat || {};
   const dev = info.dev || {};
@@ -349,7 +372,8 @@ function securityView(source = {}, discovery = {}, info = {}) {
     sniperHold: first(source.top70_sniper_hold_rate, discovery.top70_sniper_hold_rate),
     wash: first(source.is_wash_trading, discovery.is_wash_trading),
     burnStatus: first(source.burn_status, discovery.burn_status),
-    lockRate: first(source.lock_percent, source.locked_ratio, discovery.lock_percent, discovery.locked_ratio, info.locked_ratio),
+    lockRate: first(source.lock_percent, source.locked_ratio, discovery.lock_percent, discovery.locked_ratio, info.locked_ratio,
+      lockSummaryRate(source.lock_summary), lockSummaryRate(discovery.lock_summary), lockSummaryRate(info.lock_summary)),
     renouncedMint: first(source.renounced_mint, discovery.renounced_mint),
     renouncedFreezeAccount: first(source.renounced_freeze_account, discovery.renounced_freeze_account)
   };
