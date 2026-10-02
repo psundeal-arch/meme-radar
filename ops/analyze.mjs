@@ -65,17 +65,19 @@ function collectAudits(snapshots) {
 
 function checkReport(audits) {
   const stats = new Map();
-  let truncationRisk = 0;
+  // A check absent from the exported `checks` whitelist (marketBehavior) only
+  // ever surfaces via `failed`, so counting its appearances as its evaluations
+  // would report a meaningless 100% failure rate. Every check runs on every
+  // deep audit, so the audit count is the correct denominator for those.
+  const offWhitelist = new Set();
   for (const { row } of audits) {
     const checks = row.deep?.checks || {};
     const failed = new Set(row.deep?.failed || []);
     const blocking = row.deep?.blockingUnknownFields || [];
-    // marketBehavior is absent from the exported `checks` whitelist but does
-    // appear in `failed`, so fold it in from there.
-    const names = new Set([...Object.keys(checks), ...failed]);
-    for (const name of names) {
+    for (const name of new Set([...Object.keys(checks), ...failed])) {
       const entry = stats.get(name) || { evaluated: 0, failed: 0, failedUnknown: 0 };
-      entry.evaluated++;
+      if (name in checks) entry.evaluated++;
+      else offWhitelist.add(name);
       const didFail = failed.has(name) || checks[name] === false;
       if (didFail) {
         entry.failed++;
@@ -87,7 +89,8 @@ function checkReport(audits) {
       stats.set(name, entry);
     }
   }
-  return { stats, truncationRisk };
+  for (const name of offWhitelist) stats.get(name).evaluated = audits.length;
+  return { stats, offWhitelist };
 }
 
 // Follows one outcome row across snapshots and decides, per horizon, whether it
@@ -193,7 +196,7 @@ const spanHours = ((now - (snapshots[0].exportedAt || now)) / 3_600_000).toFixed
 console.log(`\n快照 ${snapshots.length} 份，跨度 ${spanHours} 小时，最新 ${new Date(now).toISOString()}\n`);
 
 const audits = collectAudits(snapshots);
-const { stats } = checkReport(audits);
+const { stats, offWhitelist } = checkReport(audits);
 console.log(`== 每项 check 的失败率（去重后 ${audits.length} 个审计结果）==`);
 console.log('check                评估   失败   失败率   其中"因未知"  未知占失败');
 for (const [name, entry] of [...stats.entries()].sort((a, b) => b[1].failed - a[1].failed)) {
